@@ -1,64 +1,64 @@
 #include <linux/limits.h>
 
-#include "tree.h"
+#include "sfind.h"
 
 int main(int argc, const char* argv[]) {
-   // this will break if their multiple redundant arguments
-   int lSwitch = 0;
-   int aSwitch = 0;
-   int argIndex;
-   int argCount = 0;
-   for (argIndex = 1; argIndex < argc; argIndex++) {
-      if (!strcmp(argv[argIndex], "-l")) {
-         lSwitch = argIndex;
-         argCount++;
-      } else if (!strcmp(argv[argIndex], "-a")) {
-         aSwitch = argIndex;
-         argCount++;
-      } else if (!strcmp(argv[argIndex], "-al")) {
-         aSwitch = argIndex;
-         lSwitch = argIndex;
-         argCount++;
-      } else if (!strcmp(argv[argIndex], "-la")) {
-         aSwitch = argIndex;
-         lSwitch = argIndex;
-         argCount++;
-      }
-   }
-
-   // directory stack variables
-   int size = 0;
-   char **stack = NULL;
-
-   char cwd[PATH_MAX];
-   getcwd(cwd, sizeof(cwd));
-   
-   // run in current dir
-   if (argc - argCount <= 1) {
-      printf("%s\n", cwd);
-      DirToStack(&stack, &size, cwd);
-      PrintDirTree(&stack, &size, NULL, lSwitch, aSwitch, size);
+   if (argc < 2) {
+      SFind(".", NULL, 0, NULL);
       return 0;
    }
-
-   // run at dir from argument
+   int execIndex = -1;
+   int nameIndex = -1;
+   int argIndex;
    for (argIndex = 1; argIndex < argc; argIndex++) {
-      if (argIndex == lSwitch || argIndex == aSwitch) {
+      if (argIndex == nameIndex + 1 || argIndex == execIndex + 1) {
          continue;
       }
-      if (argv[argIndex][0] == '/') {
-         printf("%s\n", argv[argIndex]);
-         DirToStack(&stack, &size, argv[argIndex]);
-      }  else {
-         int cwdSize = strlen(cwd);
-         int dirSize = cwdSize + strlen(argv[argIndex]) + 1;
-         char appendedCWD[dirSize];
-         strcpy(appendedCWD, cwd);
-         appendedCWD[cwdSize] = '/';
-         strcpy(appendedCWD+cwdSize+1, argv[argIndex]);
-         printf("%s\n", appendedCWD);
-         DirToStack(&stack, &size, appendedCWD);
+      if (!strcmp(argv[argIndex], "-exec")) {
+         execIndex = argIndex;
       }
-      PrintDirTree(&stack, &size, NULL, lSwitch, aSwitch, size);
+      if (!strcmp(argv[argIndex], "-name")) {
+         nameIndex = argIndex;
+      }
    }
+   if (execIndex == argc - 1) {
+      fprintf(stderr, "sfind: missing argument to `-exec'\n");
+      return 1;
+   }
+   if (nameIndex == argc - 1) {
+      fprintf(stderr, "sfind: missing argument to `-name'\n");
+      return 1;
+   }
+   char filePath[PATH_MAX];
+   if (execIndex == 1 || nameIndex == 1) {
+      strcpy(filePath, ".\0");
+   } else {
+      strcpy(filePath, argv[1]);
+   }
+   if (execIndex == -1) {
+      if (nameIndex == -1) {
+         SFind(filePath, NULL, 0, NULL);
+      } else {
+         SFind(filePath, argv[nameIndex+1], 0, NULL);
+      }
+   } else {
+      for (argIndex = execIndex+1; argIndex < argc; argIndex++) {
+         //printf("%s\n", argv[argIndex]);
+         if (!strcmp(argv[argIndex], ";")) {
+            break;
+         }
+         if (argIndex == argc - 1) {
+            fprintf(stderr, "sfind: missing argument to `-exec'\n");
+            return 1;
+         }
+      }
+      int execArgCount = argIndex - execIndex - 1;
+      if (nameIndex == -1) {
+         SFind(filePath, NULL, execArgCount, argv+execIndex+1);
+      } else {
+         SFind(filePath, argv[nameIndex+1], execArgCount, argv+execIndex+1);
+      }
+   }
+   
+   
 }

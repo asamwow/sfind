@@ -1,8 +1,8 @@
-all: tree.h main.c
-	gcc -o tree tree.h main.c
+all: sfind.h main.c
+	gcc -o sfind sfind.h main.c
 
 test: all
-	./tree -la
+	./sfind ./
 
 valgrind: all
-	valgrind ./tree
+	valgrind ./sfind

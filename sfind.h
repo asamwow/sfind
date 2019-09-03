@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 char *StackGetAt(char ***stack, int index) { return *((*stack) + index); }
@@ -88,17 +89,33 @@ void DirToStack(char ***stack, int *size, const char *dir) {
    }
 }
 
-// copied from SO, makes sense though :)
-char CompareString(char *str1, char *str2) {
-   while (*str1 != '\0' && tolower(*str1) == tolower(*str2)) {
-      ++str1;
-      ++str2;
+char SearchSubString(const char *string, const char *subString) {
+   int stringLength = strlen(string);
+   int subLength = strlen(subString);
+   if (subLength == 0) {
+      return 1;
    }
-   return (tolower(*str1) - tolower(*str2));
+   if (subLength > stringLength) {
+      return 0;
+   }
+   int charIndex;
+   for (charIndex = 0; charIndex < stringLength - subLength + 1; charIndex++) {
+      int subIndex;
+      for (subIndex = charIndex; subIndex < charIndex + subLength; subIndex++) {
+         if (string[subIndex] != subString[subIndex - charIndex]) {
+            break;
+         }
+         if (subIndex == charIndex + subLength - 1) {
+            return 1;
+         }
+      }
+   }
+   return 0;
 }
 
-char *PrintUntilDirectory(char *path, int depth, char *lastDir, char lSwitch,
-                          char aSwitch) {
+char *SearchUntilDirectory(char *path, int depth, char *lastDir,
+                           const char *subName, int argc,
+                           const char *execArgs[]) {
    DIR *dir = opendir(path);
    if (dir == NULL) {
       perror("error opening dir");
@@ -110,9 +127,6 @@ char *PrintUntilDirectory(char *path, int depth, char *lastDir, char lSwitch,
    int dpCount = 0;
    while ((dp = readdir(dir)) != NULL) {
       if (!strcmp(dp->d_name, ".") || !strcmp(dp->d_name, "..")) {
-         continue;
-      }
-      if (dp->d_name[0] == '.' && !aSwitch) {
          continue;
       }
       dpCount++;
@@ -134,9 +148,6 @@ char *PrintUntilDirectory(char *path, int depth, char *lastDir, char lSwitch,
       if (!strcmp(dp->d_name, ".") || !strcmp(dp->d_name, "..")) {
          continue;
       }
-      if (dp->d_name[0] == '.' && !aSwitch) {
-         continue;
-      }
       dps[dpIndex] = dp;
       dpIndex++;
    }
@@ -145,8 +156,8 @@ char *PrintUntilDirectory(char *path, int depth, char *lastDir, char lSwitch,
    for (dpIndex = 0; dpIndex < dpCount; dpIndex++) {
       int dpSortIndex;
       for (dpSortIndex = dpIndex; dpSortIndex > 0; dpSortIndex--) {
-         if (CompareString(dps[dpSortIndex]->d_name,
-                           dps[dpSortIndex - 1]->d_name) < 0) {
+         if (strcmp(dps[dpSortIndex]->d_name, dps[dpSortIndex - 1]->d_name) <
+             0) {
             struct dirent *tempDP = dps[dpSortIndex];
             dps[dpSortIndex] = dps[dpSortIndex - 1];
             dps[dpSortIndex - 1] = tempDP;
@@ -159,55 +170,11 @@ char *PrintUntilDirectory(char *path, int depth, char *lastDir, char lSwitch,
    for (dpIndex = 0; dpIndex < dpCount; dpIndex++) {
       dp = dps[dpIndex];
       if (lastDir != NULL) {
-         if (CompareString(dp->d_name, lastDir) <= 0) {
+         if (strcmp(dp->d_name, lastDir) <= 0) {
             continue;
          }
       }
-      int i;
-      for (i = 0; i <= depth; i++) {
-         if (i == depth) {
-            printf("|-- ");
-         } else {
-            printf("|   ");
-         }
-      }
-      if (lSwitch) {
-         struct stat fileStat;
-         int pathLength = strlen(path);
-         char *filePath =
-             malloc(sizeof(char) * (strlen(dp->d_name) + pathLength + 2));
-         if (filePath == NULL) {
-            perror("Directory is to large to store in heap.");
-            exit(1);
-         }
-         strcpy(filePath, path);
-         filePath[pathLength++] = '/';
-         strcpy(filePath + pathLength, dp->d_name);
-         if (lstat(filePath, &fileStat) < 0) {
-            perror("This shouldn't happen.");
-            exit(1);
-         }
-         free(filePath);
-         printf("[");
-         if (S_ISDIR(fileStat.st_mode)) {
-            printf("d");
-         } else if (S_ISLNK(fileStat.st_mode)) {
-            printf("l");
-         } else {
-            printf("-");
-         }
-         printf((fileStat.st_mode & S_IRUSR) ? "r" : "-");
-         printf((fileStat.st_mode & S_IWUSR) ? "w" : "-");
-         printf((fileStat.st_mode & S_IXUSR) ? "x" : "-");
-         printf((fileStat.st_mode & S_IRGRP) ? "r" : "-");
-         printf((fileStat.st_mode & S_IWGRP) ? "w" : "-");
-         printf((fileStat.st_mode & S_IXGRP) ? "x" : "-");
-         printf((fileStat.st_mode & S_IROTH) ? "r" : "-");
-         printf((fileStat.st_mode & S_IWOTH) ? "w" : "-");
-         printf((fileStat.st_mode & S_IXOTH) ? "x" : "-");
-         printf("] ");
-      }
-      printf("%s\n", dp->d_name);
+
       if (dp->d_type == DT_DIR) {
          newLastDir = (char *)malloc(sizeof(char) * (strlen(dp->d_name) + 1));
          if (newLastDir == NULL) {
@@ -217,24 +184,93 @@ char *PrintUntilDirectory(char *path, int depth, char *lastDir, char lSwitch,
          strcpy(newLastDir, dp->d_name);
          break;
       }
+
+      char *fileName = NULL;
+      if (subName != NULL) {
+         if (SearchSubString(dp->d_name, subName)) {
+            fileName = dp->d_name;
+         }
+      } else {
+         fileName = dp->d_name;
+      }
+      if (fileName != NULL && argc != 0) {
+         pid_t childID = fork();
+         if (childID < 0) {
+            perror("fork");
+            exit(1);
+         }
+         if (childID == 0) {
+            int cmdSize = strlen(execArgs[0])+1;
+            char *shellCMD = (char*)malloc(sizeof(char)*(cmdSize));
+            if (shellCMD == NULL) {
+               perror("malloc");
+               exit(1);
+            }
+            strcpy(shellCMD, execArgs[0]);
+            int cmdPosition = cmdSize-1;
+            int argIndex;
+            for (argIndex = 1; argIndex < argc; argIndex++) {
+               if (!strcmp(execArgs[argIndex], "{}")) {
+                  int pathSize = strlen(path);
+                  cmdSize += strlen(fileName) + pathSize + 1;
+                  shellCMD = realloc(shellCMD, sizeof(char)*(cmdSize));
+                  if (shellCMD == NULL) {
+                     perror("realloc");
+                     exit(1);
+                  }
+                  shellCMD[cmdPosition++] = ' ';
+                  strcpy(shellCMD+cmdPosition, path);
+                  cmdPosition += pathSize;
+                  strcpy(shellCMD+cmdPosition, fileName);
+               } else {
+                  cmdSize += strlen(execArgs[argIndex])+1;
+                  shellCMD = realloc(shellCMD, sizeof(char)*(cmdSize));
+                  if (shellCMD == NULL) {
+                     perror("realloc");
+                     exit(1);
+                  }
+                  shellCMD[cmdPosition++] = ' ';
+                  strcpy(shellCMD+cmdPosition, execArgs[argIndex]);
+               }
+               cmdPosition = cmdSize - 1;
+            }
+            strcpy(shellCMD+cmdPosition, "\0");
+            if (execl("/bin/sh", "sh", "-c", shellCMD, NULL) != 0) {
+               perror("execl");
+               exit(1);
+            }
+         } else {
+            int wstatus;
+            do {
+               pid_t w = waitpid(childID, &wstatus, WUNTRACED | WCONTINUED);
+               if (w == -1) {
+                  perror("waitpid");
+                  exit(1);
+               }
+            } while (!WIFEXITED(wstatus) && !WIFSIGNALED(wstatus));
+         }
+      } else {
+         if (fileName != NULL) {
+            printf("%s%s\n", path, fileName);
+         }
+      }
    }
 
    free(dps);
    closedir(dir);
    return newLastDir;
 }
-
-void PrintDirTree(char ***stack, int *size, char *lastDir, char lSwitch,
-                  char aSwitch, int homeSize) {
+void SearchDirTree(char ***stack, int *size, char *lastDir, int homeSize,
+                   const char *subName, int argc, const char *execArgs[]) {
    char *currentDir = StackToDir(stack, size);
-   char *foundDir = PrintUntilDirectory(currentDir, *size - homeSize, lastDir,
-                                        lSwitch, aSwitch);
+   char *foundDir = SearchUntilDirectory(currentDir, *size - homeSize, lastDir,
+                                         subName, argc, execArgs);
    free(currentDir);
    if (foundDir != NULL) {
       StackPut(stack, size, foundDir);
-      PrintDirTree(stack, size, NULL, lSwitch, aSwitch, homeSize);
+      SearchDirTree(stack, size, NULL, homeSize, subName, argc, execArgs);
       char *newLastDir = StackPop(stack, size);
-      PrintDirTree(stack, size, newLastDir, lSwitch, aSwitch, homeSize);
+      SearchDirTree(stack, size, newLastDir, homeSize, subName, argc, execArgs);
       free(newLastDir);
       free(foundDir);
       return;
@@ -244,5 +280,22 @@ void PrintDirTree(char ***stack, int *size, char *lastDir, char lSwitch,
       while (*size > 0) {
          free(StackPop(stack, size));
       }
+   }
+}
+
+void SFind(const char *directory, const char *subName, int argc,
+           const char *execArgs[]) {
+   int size = 0;
+   char **stack = NULL;
+   struct stat fileStat;
+   if (lstat(directory, &fileStat) < 0) {
+      perror("sfind");
+      exit(1);
+   }
+   if (S_ISDIR(fileStat.st_mode)) {
+      DirToStack(&stack, &size, directory);
+      SearchDirTree(&stack, &size, NULL, size, subName, argc, execArgs);
+   } else {
+      printf("%s\n", directory);
    }
 }
